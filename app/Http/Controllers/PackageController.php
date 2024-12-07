@@ -10,29 +10,96 @@ use Inertia\Inertia;
 
 class PackageController extends Controller
 {
-    public function create()
+    public function create(Request $request)
     {
         return Inertia::render('Package/Create');
     }
 
-    public function store(Request $request)
+    public function initUpload(Request $request)
+    {
+        // Vygenerujeme token pro celý upload.
+        $token = Str::random(40);
+        // Můžete token a seznam souborů, které čekáte, uložit do session nebo DB, ale pro zjednodušení to necháme takto.
+        return response()->json(['token' => $token]);
+    }
+
+    public function uploadChunk(Request $request)
     {
         $request->validate([
-            'file' => 'required|file'
+            'file' => 'required|file',
+            'token' => 'required|string',
+            'filename' => 'required|string',
+            'chunk_index' => 'required|integer',
+            'total_chunks' => 'required|integer',
         ]);
 
+        $token = $request->input('token');
+        $filename = $request->input('filename');
+        $chunkIndex = (int)$request->input('chunk_index');
+        $totalChunks = (int)$request->input('total_chunks');
+
+        // Uložíme chunk do dočasné složky
+        $path = "chunks/$token/$filename";
+        Storage::makeDirectory($path);
+
         $file = $request->file('file');
-        $token = Str::random(40);
-        $filename = $token . '.zip';
-        $file->storeAs('zips', $filename);
+        $file->storeAs($path, "chunk_$chunkIndex");
+
+        return response()->json(['status' => 'chunk_received']);
+    }
+
+    public function finalizeUpload(Request $request)
+    {
+        $request->validate([
+            'token' => 'required|string',
+            'files' => 'required|array'
+        ]);
+
+        $token = $request->input('token');
+        $files = $request->input('files');
+        $tempPath = Storage::path("chunks/$token");
+        $finalZipName = $token . '.zip';
+        $finalZipPath = Storage::path("zips/$finalZipName");
+
+        $zip = new \ZipArchive();
+        $zip->open($finalZipPath, \ZipArchive::CREATE | \ZipArchive::OVERWRITE);
+
+        foreach ($files as $f) {
+            $type = $f['type'];
+            $relativePath = $f['relativePath'];
+
+            if ($type === 'directory') {
+                // Přidáme prázdnou složku
+                $zip->addEmptyDir($relativePath);
+            } else {
+                // Soubor
+                $totalChunks = $f['total_chunks'];
+                // Načteme chunky do paměti
+                $mem = fopen('php://temp', 'r+');
+                for ($i = 0; $i < $totalChunks; $i++) {
+                    $chunkPath = $tempPath . "/$relativePath/chunk_$i";
+                    $chunk = fopen($chunkPath, 'rb');
+                    stream_copy_to_stream($chunk, $mem);
+                    fclose($chunk);
+                }
+                rewind($mem);
+                $content = stream_get_contents($mem);
+                fclose($mem);
+
+                $zip->addFromString($relativePath, $content);
+            }
+        }
+
+        $zip->close();
+        Storage::deleteDirectory("chunks/$token");
 
         $package = Package::create([
             'token' => $token,
-            'filename' => $filename,
+            'filename' => $finalZipName,
             'expires_at' => now()->addDays(7),
         ]);
 
-        return Inertia::render('Package/Success', [
+        return response()->json([
             'link' => route('packages.show', $token),
         ]);
     }

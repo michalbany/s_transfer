@@ -25,11 +25,15 @@ use Inertia\Inertia;
 //     Route::delete('/profile', [ProfileController::class, 'destroy'])->name('profile.destroy');
 // });
 
-
 Route::get('/', [PackageController::class, 'create'])->name('packages.create');
-Route::post('/', [PackageController::class, 'store'])->name('packages.store');
-Route::get('/{token}/download', [PackageController::class, 'download'])->name('packages.download');
+
+// Chunk upload endpoints
+Route::post('/init-upload', [PackageController::class, 'initUpload']);
+Route::post('/upload-chunk', [PackageController::class, 'uploadChunk']);
+Route::post('/finalize-upload', [PackageController::class, 'finalizeUpload']);
+
 Route::get('/{token}', [PackageController::class, 'show'])->name('packages.show');
+Route::get('/{token}/download', [PackageController::class, 'download'])->name('packages.download');
 
 
 require __DIR__.'/auth.php';
