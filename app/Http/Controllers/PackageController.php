@@ -19,6 +19,8 @@ class PackageController extends Controller
     {
         // Vygenerujeme token pro celý upload.
         $token = Str::random(40);
+        Storage::makeDirectory('chunks');
+        Storage::makeDirectory('zips');
         // Můžete token a seznam souborů, které čekáte, uložit do session nebo DB, ale pro zjednodušení to necháme takto.
         return response()->json(['token' => $token]);
     }
@@ -54,55 +56,68 @@ class PackageController extends Controller
             'token' => 'required|string',
             'files' => 'required|array'
         ]);
-
+    
         $token = $request->input('token');
         $files = $request->input('files');
         $tempPath = Storage::path("chunks/$token");
         $finalZipName = $token . '.zip';
         $finalZipPath = Storage::path("zips/$finalZipName");
-
+    
         $zip = new \ZipArchive();
-        $zip->open($finalZipPath, \ZipArchive::CREATE | \ZipArchive::OVERWRITE);
-
+        if ($zip->open($finalZipPath, \ZipArchive::CREATE | \ZipArchive::OVERWRITE) !== TRUE) {
+            return response()->json(['error' => 'Cannot create ZIP file'], 500);
+        }
+    
         foreach ($files as $f) {
             $type = $f['type'];
-            $relativePath = $f['relativePath'];
-
+            $relativePath = ltrim($f['relativePath'], '/'); // odstraníme počáteční '/'
+    
             if ($type === 'directory') {
                 // Přidáme prázdnou složku
-                $zip->addEmptyDir($relativePath);
+                if (!$zip->addEmptyDir($relativePath)) {
+                    // \Log::error("Failed to add directory: $relativePath to ZIP");
+                }
             } else {
                 // Soubor
                 $totalChunks = $f['total_chunks'];
-                // Načteme chunky do paměti
-                $mem = fopen('php://temp', 'r+');
+                $content = '';
+    
                 for ($i = 0; $i < $totalChunks; $i++) {
-                    $chunkPath = $tempPath . "/$relativePath/chunk_$i";
-                    $chunk = fopen($chunkPath, 'rb');
-                    stream_copy_to_stream($chunk, $mem);
-                    fclose($chunk);
+                    $chunkPath = "$tempPath/$relativePath/chunk_$i";
+                    if (!file_exists($chunkPath)) {
+                        // \Log::error("Chunk file does not exist: $chunkPath");
+                        continue;
+                    }
+                    $chunkContent = file_get_contents($chunkPath);
+                    if ($chunkContent === false) {
+                        // \Log::error("Failed to read chunk file: $chunkPath");
+                        continue;
+                    }
+                    $content .= $chunkContent;
                 }
-                rewind($mem);
-                $content = stream_get_contents($mem);
-                fclose($mem);
-
-                $zip->addFromString($relativePath, $content);
+    
+                // Přidáme soubor do ZIPu s jeho relativní cestou
+                if (!$zip->addFromString($relativePath, $content)) {
+                    // \Log::error("Failed to add file: $relativePath to ZIP");
+                }
             }
         }
-
+    
         $zip->close();
         Storage::deleteDirectory("chunks/$token");
-
+    
+        // Vytvoříme Package záznam
         $package = Package::create([
             'token' => $token,
             'filename' => $finalZipName,
             'expires_at' => now()->addDays(7),
         ]);
-
+    
         return response()->json([
             'link' => route('packages.show', $token),
         ]);
     }
+    
 
     public function show($token)
     {
