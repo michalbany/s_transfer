@@ -26,7 +26,7 @@ const errorMessage = ref<string | null>(null);
 const statusMessage = ref("Idle");
 const progress = ref(0);
 
-const MAX_SIZE = 5 * 1024 * 1024 * 1024; // 5GB
+const MAX_SIZE = 10 * 1024 * 1024 * 1024; // 5GB
 const CHUNK_SIZE = 500 * 1024 * 1024; // 500MB pro méně chunků
 
 // Funkce pro zpracování přetažení
