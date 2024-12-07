@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { Head } from "@inertiajs/vue3";
+import { Link } from "@inertiajs/vue3";
 import { ref } from "vue";
 import { Button } from "@/Components/ui/button";
 import DefaultLayout from "@/Layouts/DefaultLayout.vue";
 import { toast } from "vue-sonner";
-import axios from 'axios';
+import axios from 'axios'
 
 // Rozhraní pro položky
 interface Item {
@@ -12,10 +13,10 @@ interface Item {
     name: string;
     file?: File;
     relativePath: string; // pro zachování struktury
-    entry?: FileSystemDirectoryEntry; // pro složky
 }
 
-const items = ref<Item[]>([]);
+const items = ref<Item[]>([]); // Top-level items
+const uploadItems = ref<Item[]>([]); // All items for upload
 const isDragging = ref(false);
 const fileInput = ref<HTMLInputElement | null>(null);
 const uploaded = ref(false);
@@ -26,7 +27,7 @@ const errorMessage = ref<string | null>(null);
 const statusMessage = ref("Idle");
 const progress = ref(0);
 
-const MAX_SIZE = 10 * 1024 * 1024 * 1024; // 5GB
+const MAX_SIZE = 5 * 1024 * 1024 * 1024; // 5GB
 const CHUNK_SIZE = 500 * 1024 * 1024; // 500MB pro méně chunků
 
 // Funkce pro zpracování přetažení
@@ -54,40 +55,59 @@ function handleFilesFromInput(e: Event) {
     const input = e.target as HTMLInputElement;
     if (!input.files) return;
     for (const f of input.files) {
-        // Přidáme soubor bez složek
-        items.value.push({
+        // Přidáme soubor do top-level a upload listu
+        const newItem: Item = {
             type: "file",
             name: f.name,
             file: f,
             relativePath: f.name
-        });
+        };
+        items.value.push(newItem);
+        uploadItems.value.push(newItem);
     }
 }
 
-// Pomocná funkce pro získání souboru z entry
 function fileFromEntry(entry: FileSystemFileEntry): Promise<File> {
     return new Promise((resolve, reject) => {
         entry.file(file => file ? resolve(file) : reject(new Error("No file returned")), reject);
     });
 }
 
-// Rekurzivní čtení obsahu složky při nahrávání
-async function readDirectoryRecursive(dirEntry: FileSystemDirectoryEntry, parentPath: string): Promise<{ path: string; file: File }[]> {
+// Rekurzivní přečtení celé struktury. Vrací proměnný seznam položek (soubory i složky).
+async function readDirectoryRecursive(dirEntry: FileSystemDirectoryEntry, parentPath: string): Promise<Item[]> {
     return new Promise((resolve, reject) => {
         const reader = dirEntry.createReader();
         reader.readEntries(async (entries) => {
-            let results: { path: string; file: File }[] = [];
+            let results: Item[] = [];
             for (const entry of entries) {
                 const fullPath = parentPath + entry.name;
                 if (entry.isDirectory) {
+                    // Přidáme samotnou složku
+                    const dirItem: Item = {
+                        type: "directory",
+                        name: entry.name,
+                        relativePath: fullPath
+                    };
+                    results.push(dirItem);
+                    uploadItems.value.push(dirItem); // Přidáme do upload listu
+
+                    // Rekurze pro podsložky a soubory
                     const subDirEntry = entry as FileSystemDirectoryEntry;
                     const subItems = await readDirectoryRecursive(subDirEntry, fullPath + "/");
                     results = results.concat(subItems);
                 } else {
+                    // Soubor
                     const fileEntry = entry as FileSystemFileEntry;
                     try {
                         const file = await fileFromEntry(fileEntry);
-                        results.push({ path: fullPath, file });
+                        const fileItem: Item = {
+                            type: "file",
+                            name: file.name,
+                            file: file,
+                            relativePath: fullPath
+                        };
+                        results.push(fileItem);
+                        uploadItems.value.push(fileItem); // Přidáme do upload listu
                     } catch (err: any) {
                         console.error(`Failed to read file ${fullPath}:`, err);
                         toast.error(`Failed to read file ${fullPath}: ${err.message}`);
@@ -108,23 +128,30 @@ async function processItems(itemsList: DataTransferItemList) {
         if (entry) {
             if (entry.isDirectory) {
                 const dirEntry = entry as FileSystemDirectoryEntry;
-                // Přidáme pouze samotnou složku bez jejího obsahu
-                items.value.push({
+                // Přidáme pouze samotnou složku do top-level seznamu
+                const dirItem: Item = {
                     type: "directory",
                     name: dirEntry.name,
-                    relativePath: dirEntry.fullPath.endsWith('/') ? dirEntry.fullPath : dirEntry.fullPath + '/',
-                    entry: dirEntry
-                });
+                    relativePath: dirEntry.fullPath.startsWith('/') ? dirEntry.fullPath.substring(1) : dirEntry.fullPath
+                };
+                items.value.push(dirItem);
+                uploadItems.value.push(dirItem);
+
+                // Rekurzivně načteme obsah složky pro upload
+                const dirItems = await readDirectoryRecursive(dirEntry, dirItem.relativePath + "/");
+                // DirItems jsou přidány do uploadItems.value v readDirectoryRecursive
             } else if (entry.isFile) {
                 const fileEntry = entry as FileSystemFileEntry;
                 try {
                     const file = await fileFromEntry(fileEntry);
-                    items.value.push({
+                    const fileItem: Item = {
                         type: "file",
                         name: file.name,
                         file: file,
                         relativePath: file.name // soubor v rootu
-                    });
+                    };
+                    items.value.push(fileItem);
+                    uploadItems.value.push(fileItem);
                 } catch (err: any) {
                     errorMessage.value = "Failed to read a file. " + err.message;
                     toast.error("Failed to read a file. " + err.message);
@@ -135,12 +162,14 @@ async function processItems(itemsList: DataTransferItemList) {
             // Fallback, pokud nemáme webkitGetAsEntry
             const f = item.getAsFile();
             if (f) {
-                items.value.push({
+                const fileItem: Item = {
                     type: "file",
                     name: f.name,
                     file: f,
                     relativePath: f.name
-                });
+                };
+                items.value.push(fileItem);
+                uploadItems.value.push(fileItem);
             }
         }
     }
@@ -149,7 +178,7 @@ async function processItems(itemsList: DataTransferItemList) {
 // Funkce pro spočítání celkové velikosti souborů
 async function getTotalSize(): Promise<number> {
     let totalSize = 0;
-    for (const item of items.value) {
+    for (const item of uploadItems.value) { // Používáme uploadItems pro správné počítání
         if (item.type === "file" && item.file) {
             totalSize += item.file.size;
         }
@@ -162,7 +191,7 @@ let chunksUploaded = 0;
 
 // Funkce pro nahrávání souborů a složek
 async function uploadFiles() {
-    if (!items.value.length) {
+    if (!uploadItems.value.length) { // Kontrola uploadItems
         toast.warning("No items selected.");
         return;
     }
@@ -190,7 +219,7 @@ async function uploadFiles() {
         const filesInfo: { filename: string; total_chunks: number; relativePath: string; type: "file" | "directory" }[] = [];
 
         // 3) Spočítáme totalChunksOverall a připravíme filesInfo
-        for (const item of items.value) {
+        for (const item of uploadItems.value) {
             if (item.type === 'file' && item.file) {
                 const totalChunks = Math.ceil(item.file.size / CHUNK_SIZE);
                 totalChunksOverall += totalChunks;
@@ -200,19 +229,7 @@ async function uploadFiles() {
                     relativePath: item.relativePath,
                     type: "file"
                 });
-            } else if (item.type === 'directory' && item.entry) {
-                // Rekurzivně načteme obsah složky
-                const folderFiles = await readDirectoryRecursive(item.entry, item.relativePath);
-                for (const folderFile of folderFiles) {
-                    const totalChunks = Math.ceil(folderFile.file.size / CHUNK_SIZE);
-                    totalChunksOverall += totalChunks;
-                    filesInfo.push({
-                        filename: folderFile.file.name,
-                        total_chunks: totalChunks,
-                        relativePath: folderFile.path.substring(1), // odstraníme počáteční '/'
-                        type: "file"
-                    });
-                }
+            } else if (item.type === 'directory') {
                 // Přidáme prázdnou složku do filesInfo
                 filesInfo.push({
                     filename: item.name,
@@ -226,7 +243,7 @@ async function uploadFiles() {
         // 4) Nahrajeme všechny soubory
         for (const fileInfo of filesInfo) {
             if (fileInfo.type === 'file') {
-                const fileItem = findFileByRelativePath(fileInfo.relativePath);
+                const fileItem = uploadItems.value.find(item => item.relativePath === fileInfo.relativePath && item.type === 'file');
                 if (fileItem && fileItem.file) {
                     await uploadSingleFile(token, fileItem.file, fileInfo.relativePath);
                 }
@@ -258,7 +275,7 @@ async function uploadFiles() {
 
 // Pomocná funkce pro nalezení souboru podle relativePath
 function findFileByRelativePath(relativePath: string): Item | undefined {
-    return items.value.find(item => item.relativePath === relativePath && item.type === 'file');
+    return uploadItems.value.find(item => item.relativePath === relativePath && item.type === 'file');
 }
 
 // Funkce pro nahrávání jednotlivých chunků souboru
@@ -288,7 +305,32 @@ function openFileInput() {
 
 // Funkce pro odstranění položky ze seznamu
 function removeItem(index: number) {
+    const item = items.value[index];
+
+    // Odstraníme z uploadItems
+    const uploadIndex = uploadItems.value.findIndex(uploadItem => uploadItem.relativePath === item.relativePath && uploadItem.type === item.type);
+    if (uploadIndex !== -1) {
+        uploadItems.value.splice(uploadIndex, 1);
+    }
+    // Odstraníme z items
     items.value.splice(index, 1);
+
+    // console.log("Removing item", item);
+
+    if (item.type === "directory") {
+        // odstraníme všechny položky s prefixem
+        const prefix = item.relativePath + "/";
+
+        const toRemove = uploadItems.value.filter(uploadItem => uploadItem.relativePath.startsWith(prefix));
+
+        // Odstraníme items
+        for (const removeItem of toRemove) {
+            const removeIndex = uploadItems.value.findIndex(uploadItem => uploadItem.relativePath === removeItem.relativePath && uploadItem.type === removeItem.type);
+            if (removeIndex !== -1) {
+                uploadItems.value.splice(removeIndex, 1);
+            }
+        }
+    }
 }
 
 const input = ref();
@@ -297,7 +339,9 @@ const copied = ref(false);
 // Funkce pro kopírování linku
 function HandleCopyLinkFromInput() {
     if (!returnLink.value) return;
-    input.value.select();
+    if (input.value) {
+        input.value.select();
+    }
     navigator.clipboard.writeText(returnLink.value);
     toast.success("Link copied to clipboard!");
     copied.value = true;
@@ -307,7 +351,6 @@ function HandleCopyLinkFromInput() {
     <DefaultLayout>
         <Head title="Upload" />
 
-        <!-- Zobrazení po nahrání -->
         <template v-if="uploaded">
             <div class="p-6 py-2 mb-2">
                 <div class="flex justify-center items-center flex-col">
@@ -336,14 +379,14 @@ function HandleCopyLinkFromInput() {
             
             <div class="px-4 mt-4">
                 <Button class="w-full" :disabled="!copied">
-                    <a :href="route('packages.create')" class="w-full h-full block text-center">Send another</a>
+                    <Link :href="route('packages.create')" class="w-full h-full">
+                        Send another
+                    </Link>
                 </Button>
             </div>
         </template>
 
-        <!-- Zobrazení před nahráváním -->
         <div v-else>
-            <!-- Drag & Drop oblast -->
             <div v-if="!loading" @dragover.prevent="onDragOver" @dragleave.prevent="onDragLeave" @drop="onDrop" class="p-6 py-8 mb-2">
                 <div class="flex items-center gap-3">
                     <svg xmlns="http://www.w3.org/2000/svg" class="bg-primary text-white p-1 rounded-full" width="32" height="32" viewBox="0 0 24 24">
@@ -382,17 +425,17 @@ function HandleCopyLinkFromInput() {
                                     <path d="M14 2v4a2 2 0 0 0 2 2h4"/>
                                 </g>
                             </svg>
-                            <span>{{ item.name }}</span>
+                            <span>{{ item.relativePath }}</span>
                         </template>
                         <template v-else>
                             <svg class="size-4 inline-block mr-2 text-primary" xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24">
                                 <path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>
                             </svg>
-                            <span>{{ item.name }}</span>
+                            <span>{{ item.relativePath }}</span>
                         </template>
                     </div>
                     <Button size="icon" variant="ghost" class="h-8 w-8 hover:text-primary" :disabled="loading" @click="removeItem(index)">
-                        <svg class="size-4" xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24">
+                        <svg class="size-4 " xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24">
                             <path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 6h18m-2 0v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6m3 0V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2m-6 5v6m4-6v6"/>
                         </svg>
                     </Button>
