@@ -15,6 +15,14 @@ class PackageController extends Controller
         return Inertia::render('Package/Create');
     }
 
+    public function clear()
+    {
+        Package::query()->delete();
+
+        Storage::deleteDirectory('chunks');
+        Storage::deleteDirectory('zips');
+    }
+
     public function index()
     {
         return Package::all();
