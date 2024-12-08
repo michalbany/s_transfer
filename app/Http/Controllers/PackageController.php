@@ -66,60 +66,136 @@ class PackageController extends Controller
 
     public function finalizeUpload(Request $request)
     {
+
+        ini_set('memory_limit', '1G'); // #temp
+        // Validace požadavku
         $request->validate([
             'token' => 'required|string',
             'files' => 'required|array'
         ]);
-
+    
         $token = $request->input('token');
         $files = $request->input('files');
         $tempPath = Storage::path("chunks/$token");
         $finalZipName = $token . '.zip';
         $finalZipPath = Storage::path("zips/$finalZipName");
-
-        $zip = new \ZipArchive();
-        $zip->open($finalZipPath, \ZipArchive::CREATE | \ZipArchive::OVERWRITE);
-
-        foreach ($files as $f) {
-            $type = $f['type'];
-            $relativePath = $f['relativePath'];
-
-            if ($type === 'directory') {
-                // Přidáme prázdnou složku
-                $zip->addEmptyDir($relativePath);
-            } else {
-                // Soubor
-                $totalChunks = $f['total_chunks'];
-                // Načteme chunky do paměti
-                $mem = fopen('php://temp', 'r+');
-                for ($i = 0; $i < $totalChunks; $i++) {
-                    $chunkPath = $tempPath . "/$relativePath/chunk_$i";
-                    $chunk = fopen($chunkPath, 'rb');
-                    stream_copy_to_stream($chunk, $mem);
-                    fclose($chunk);
-                }
-                rewind($mem);
-                $content = stream_get_contents($mem);
-                fclose($mem);
-
-                $zip->addFromString($relativePath, $content);
+    
+        // Zajištění existence a oprávnění složky pro ZIP
+        $zipDir = dirname($finalZipPath);
+        if (!file_exists($zipDir)) {
+            if (!mkdir($zipDir, 0755, true)) {
+                return response()->json(['error' => 'Failed to create ZIP directory'], 500);
             }
         }
-
-        $zip->close();
+    
+        // Otevření ZIP archivu
+        $zip = new \ZipArchive();
+        if ($zip->open($finalZipPath, \ZipArchive::CREATE | \ZipArchive::OVERWRITE) !== TRUE) {
+            return response()->json(['error' => 'Cannot create ZIP file'], 500);
+        }
+    
+        // Pole pro sledování sestavených souborů k odstranění po zavření ZIP
+        $assembledFiles = [];
+    
+        foreach ($files as $f) {
+            $type = $f['type'];
+            $relativePath = ltrim($f['relativePath'], '/'); // Odstranění počáteční '/'
+    
+            if ($type === 'directory') {
+                // Přidání prázdné složky do ZIP
+                if (!$zip->addEmptyDir($relativePath)) {
+                    $zip->close();
+                    return response()->json(['error' => "Failed to add directory: $relativePath to ZIP"], 500);
+                }
+            } elseif ($type === 'file') {
+                $totalChunks = $f['total_chunks'];
+                $assembledPath = Storage::path("chunks/{$token}/assembled_$relativePath");
+    
+                // Zajištění existence adresáře pro sestavený soubor
+                $assembledDir = dirname($assembledPath);
+                if (!file_exists($assembledDir)) {
+                    if (!mkdir($assembledDir, 0755, true)) {
+                        $zip->close();
+                        return response()->json(['error' => "Failed to create directory for assembled file: $relativePath"], 500);
+                    }
+                }
+    
+                // Otevření dočasného souboru pro sestavení
+                $assembledFile = fopen($assembledPath, 'wb');
+                if (!$assembledFile) {
+                    $zip->close();
+                    return response()->json(['error' => "Failed to create assembled file: $relativePath"], 500);
+                }
+    
+                // Postupné přidávání chunks do sestaveného souboru
+                for ($i = 0; $i < $totalChunks; $i++) {
+                    $chunkPath = "$tempPath/$relativePath/chunk_$i";
+                    if (!file_exists($chunkPath)) {
+                        fclose($assembledFile);
+                        $zip->close();
+                        return response()->json(['error' => "Missing chunk: $relativePath chunk $i"], 500);
+                    }
+    
+                    // Čtení chunku
+                    $chunkContent = file_get_contents($chunkPath);
+                    if ($chunkContent === false) {
+                        fclose($assembledFile);
+                        $zip->close();
+                        return response()->json(['error' => "Failed to read chunk: $relativePath chunk $i"], 500);
+                    }
+    
+                    // Zápis chunku do sestaveného souboru
+                    $bytesWritten = fwrite($assembledFile, $chunkContent);
+                    if ($bytesWritten === false) {
+                        fclose($assembledFile);
+                        $zip->close();
+                        return response()->json(['error' => "Failed to write chunk: $relativePath chunk $i"], 500);
+                    }
+                }
+    
+                fclose($assembledFile);
+    
+                // Přidání sestaveného souboru do ZIPu
+                if (!$zip->addFile($assembledPath, $relativePath)) {
+                    $zip->close();
+                    return response()->json(['error' => "Failed to add file: $relativePath to ZIP"], 500);
+                }
+    
+                // Přidání cesty sestaveného souboru do pole pro pozdější odstranění
+                $assembledFiles[] = $assembledPath;
+            } else {
+                // Neznámý typ souboru, můžete se rozhodnout vrátit chybu nebo pokračovat
+                return response()->json(['error' => "Unknown file type: $type for relativePath: $relativePath"], 400);
+            }
+        }
+    
+        // Pokus o zavření ZIP archivu
+        if (!$zip->close()) {
+            return response()->json(['error' => 'Failed to close ZIP archive'], 500);
+        }
+    
+        // Odstranění sestavených souborů až po úspěšném zavření ZIP archivu
+        foreach ($assembledFiles as $file) {
+            unlink($file);
+        }
+    
+        // Odstranění dočasných chunks
         Storage::deleteDirectory("chunks/$token");
-
-        $package = Package::create([
+    
+        // Vytvoření záznamu o balíčku
+        Package::create([
             'token' => $token,
             'filename' => $finalZipName,
             'expires_at' => now()->addDays(7),
         ]);
 
+        \Log::info('Upload Peak Memory ' . memory_get_peak_usage());
+    
+        // Návrat odpovědi s odkazem
         return response()->json([
             'link' => route('packages.show', $token),
         ]);
     }
-    
 
     public function show($token)
     {
