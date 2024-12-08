@@ -67,7 +67,7 @@ class PackageController extends Controller
     public function finalizeUpload(Request $request)
     {
 
-        ini_set('memory_limit', '1G'); // #temp
+        // ini_set('memory_limit', '1G'); // #temp
         // Validace požadavku
         $request->validate([
             'token' => 'required|string',
@@ -189,7 +189,7 @@ class PackageController extends Controller
             'expires_at' => now()->addDays(7),
         ]);
 
-        \Log::info('Upload Peak Memory ' . memory_get_peak_usage());
+        // \Log::info('Upload Peak Memory ' . memory_get_peak_usage());
     
         // Návrat odpovědi s odkazem
         return response()->json([

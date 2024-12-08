@@ -27,7 +27,7 @@ const errorMessage = ref<string | null>(null);
 const statusMessage = ref("Idle");
 const progress = ref(0);
 
-const MAX_SIZE = 5 * 1024 * 1024 * 1024; // 5GB
+const MAX_SIZE = 1 * 1024 * 1024 * 1024; // 1GB
 const CHUNK_SIZE = 500 * 1024 * 1024; // 500MB pro méně chunků
 
 // Funkce pro zpracování přetažení
@@ -206,7 +206,7 @@ async function uploadFiles() {
     try {
         const totalSize = await getTotalSize();
         if (totalSize > MAX_SIZE) {
-            toast.error("The total size exceeds 5GB. Please remove some files.");
+            toast.error("The total size exceeds 1GB. Please remove some files.");
             loading.value = false;
             return;
         }
