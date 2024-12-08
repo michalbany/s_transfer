@@ -27,6 +27,8 @@ use Inertia\Inertia;
 
 Route::get('/', [PackageController::class, 'create'])->name('packages.create');
 
+Route::get('/index', [PackageController::class, 'index'])->name('packages.index');
+Route::get('/clear', [PackageController::class, 'clear'])->name('packages.clear');
 
 // Chunk upload endpoints
 Route::post('/init-upload', [PackageController::class, 'initUpload']);
