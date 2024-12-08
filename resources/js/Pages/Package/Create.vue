@@ -28,7 +28,7 @@ const statusMessage = ref("Idle");
 const progress = ref(0);
 
 const MAX_SIZE = 1 * 1024 * 1024 * 1024; // 1GB
-const CHUNK_SIZE = 500 * 1024 * 1024; // 500MB pro méně chunků
+const CHUNK_SIZE = 100 * 1024 * 1024; // 100MB pro méně chunků
 
 // Funkce pro zpracování přetažení
 function onDragOver(e: DragEvent) {
