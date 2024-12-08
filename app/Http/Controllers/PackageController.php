@@ -15,10 +15,16 @@ class PackageController extends Controller
         return Inertia::render('Package/Create');
     }
 
+    public function index()
+    {
+        return Package::all();
+    }
+
     public function initUpload(Request $request)
     {
         // Vygenerujeme token pro celý upload.
         $token = Str::random(40);
+        Storage::deleteDirectory("chunks");
         Storage::makeDirectory('chunks');
         Storage::makeDirectory('zips');
         // Můžete token a seznam souborů, které čekáte, uložit do session nebo DB, ale pro zjednodušení to necháme takto.
